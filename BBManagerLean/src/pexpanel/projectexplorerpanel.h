@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QLabel>
 #include <QAbstractItemModel>
+#include <QAbstractProxyModel>
 #include <QItemSelectionModel>
 #include <QTreeView>
 #include <QListWidget>
@@ -15,12 +16,11 @@
 #include <QTimer>
 #include <QStackedWidget>
 #include <QSpinBox>
-#include "../dialogs/nameAndIdDialog.h"
-#include "../model/tree/project/songfolderproxymodel.h"
 
 class DrmListModel;
 class BeatsProjectModel;
 class QUndoView;
+class SongPart;
 
 #if !defined(DEBUG_TAB_ENABLED) && defined(QT_DEBUG)
 #define DEBUG_TAB_ENABLED
@@ -43,7 +43,7 @@ public:
     ~ProjectExplorerPanel();
 
    // Beats Model Getters/Setters
-   void setProxyBeatsModel(SongFolderProxyModel * p_model);
+   void setProxyBeatsModel(QAbstractProxyModel * p_model);
    void setProxyBeatsRootIndex(QModelIndex rootIndex);
    void setProxyBeatsSelectionModel(QItemSelectionModel *beatsSelectionModel);
    QItemSelectionModel * beatsSelectionModel();
@@ -95,7 +95,6 @@ private:
    QTreeView *mp_beatsTreeView;
    QListView *mp_drmListView;
    QLabel * mp_Title;
-   NameAndIdDialog *nameAndIdDialog;
    bool m_clean;
 #ifdef DEBUG_TAB_ENABLED
    QTreeView *mp_beatsDebugTreeView;

@@ -1,13 +1,8 @@
 #ifndef PLAYER_H
 #define PLAYER_H
 
-#include <QThread>
-#include <QAudioOutput>
-#include <QIODevice>
-#include <QTime>
-#include <QString>
-#include <QQueue>
-#include <QReadWriteLock>
+// Use our wrapper for Qt includes
+#include "../QtIncludes.h"
 
 #include "button.h"
 #include "../model/filegraph/song.h"
@@ -57,6 +52,9 @@ private:
     void processEvent(void);
     void updateStatus(bool forceEmit);
     void run(void);
+    bool checkMemoryAvailability(qint64 requiredBytes);
+    void logMemoryUsage() const;
+    void freeMemoryIfNeeded();
 
     QAudioDeviceInfo m_device;
     QAudioOutput *m_audioOutput;
@@ -142,6 +140,7 @@ public slots:
 
     void effect(void);
     void slotSetBufferTime_ms(int time_ms);
+    void cleanupAudioOutput();
 };
 
 #endif // PLAYER_H

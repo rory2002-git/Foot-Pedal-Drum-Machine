@@ -29,7 +29,7 @@ SongTrackMetaItem::SongTrackMetaItem() :
 #ifdef __clang__
    uint8_t * end = (uint8_t *) memccpy(m_Data, data, 0, SONGFILE_MAX_TRACK_META_SIZE);
 #else
-   uint8_t * end = (uint8_t *) _memccpy(m_Data, data, 0, SONGFILE_MAX_TRACK_META_SIZE);
+   uint8_t * end = (uint8_t *) memccpy(m_Data, data, 0, SONGFILE_MAX_TRACK_META_SIZE);
 #endif
    m_InternalSize = end - m_Data;
 }

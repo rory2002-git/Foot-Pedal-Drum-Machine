@@ -19,172 +19,129 @@
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <QCoreApplication>
+#include <QDir>
+#include <QDebug>
+#include <QThread>
+#include <cstring>
+#include <stdexcept>
+#include <signal.h>
 #include "src/player/player.h"  // Include the Player class header
 
-// Function to check if a key was pressed
-bool kbhit() {
-    struct termios oldt, newt;
-    int ch;
-    int oldf;
-    
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO);
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
-    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
-    
-    ch = getchar();
-    
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    fcntl(STDIN_FILENO, F_SETFL, oldf);
-    if(ch != EOF) {
-        ungetc(ch, stdin);
-        return true;
+// Default paths for the demo content
+const QString DEFAULT_DRUMSET_PATH = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Indie Drumset v2.0.DRM"; // Using a smaller drumset as default
+const QString DEFAULT_SONG_PATH = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/203A18C4/716D6763.BBS";
+
+// List of available drum sets for testing (smaller to larger size)
+const QStringList AVAILABLE_DRUMSETS = {
+    "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Indie Drumset v2.0.DRM",      // Option 1 - Smallest
+    "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Jazz Drumset v2.0.DRM",      // Option 2 - Small
+    "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Dance Drumset v2.0.DRM",     // Option 3 - Medium
+    "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Metal Drumset v2.0.DRM",     // Option 4 - Large
+    "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Rock Drumset v2.0.DRM"      // Option 5 - Largest
+};
+
+// List of available songs for testing
+const QStringList AVAILABLE_SONGS = {
+    "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/203A18C4/716D6763.BBS", // Option 6
+    "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/203A18C4/781A9FDF.BBS", // Option 7
+    "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/1F3C0EE8/6B87F13A.BBS", // Option 8
+    "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/07E0BFAA.BBS", // Option 9
+    "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/3BACBCA4.BBS"  // Option 0
+};
+
+Player* gPlayerPtr = nullptr;
+
+// Signal handler for clean shutdown
+void signalHandler(int signal) {
+    if (gPlayerPtr) {
+        qDebug() << "Received signal" << signal << ", stopping player";
+        gPlayerPtr->stop();
     }
-    return false;
+    QCoreApplication::quit();
+}
+
+// Helper function to handle keyboard input
+void processKeyboardInput(Player* player) {
+    QThread inputThread;
+    QObject::connect(&inputThread, &QThread::started, [player]() {
+        try {
+            char input;
+            while (std::cin.get(input)) {
+                if (input == ' ') {
+                    // Toggle playback on spacebar
+                    if (player->started()) {
+                        std::cout << "Stopping playback..." << std::endl;
+                        player->stop();
+                    } else {
+                        std::cout << "Starting playback..." << std::endl;
+                        player->play();
+                    }
+                } else if (input == 'q' || input == 'Q') {
+                    // Quit on 'q'
+                    std::cout << "Quitting..." << std::endl;
+                    player->stop();
+                    QCoreApplication::quit();
+                    break;
+                } else if (input >= '1' && input <= '5') {
+                    // Select drum set
+                    int index = input - '1';
+                    if (index >= 0 && index < AVAILABLE_DRUMSETS.size()) {
+                        std::cout << "Loading drum set " << (index + 1) << "..." << std::endl;
+                        player->setDrumset(AVAILABLE_DRUMSETS[index]);
+                    }
+                } else if (input >= '6' && input <= '0' + AVAILABLE_SONGS.size() - 5) {
+                    // Select song (6-0 map to indices 0-4)
+                    int index = (input == '0') ? 4 : (input - '6');
+                    if (index >= 0 && index < AVAILABLE_SONGS.size()) {
+                        std::cout << "Loading song " << (index + 6) << "..." << std::endl;
+                        player->setSong(AVAILABLE_SONGS[index]);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            qCritical() << "Error in input thread:" << e.what();
+        } catch (...) {
+            qCritical() << "Unknown error in input thread";
+        }
+    });
+    
+    inputThread.start();
 }
 
 int main(int argc, char *argv[])
 {
-    // Instantiate the Player object
-    Player player;
-
-    // Set default drum set and song
-    QString defaultDrumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Rock Drumset v2.0.DRM";
-    QString defaultSongPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/203A18C4/716D6763.BBS";
-    player.setDrumset(defaultDrumsetPath);
-    player.setSong(defaultSongPath);
-
-    std::cout << "Press spacebar to control playback. Press 'q' to quit.\n";
-    std::cout << "When not playing:\n";
-    std::cout << "  1-5: Select drum set\n";
-    std::cout << "  6-0: Select song\n";
-    
-    bool isPlaying = false;
-    bool isHolding = false;
-    bool wasHolding = false;
-    bool holdTransitionTriggered = false;
-    auto lastTapTime = std::chrono::steady_clock::now();
-    auto holdStartTime = std::chrono::steady_clock::now();
-    const auto DOUBLE_TAP_THRESHOLD = std::chrono::milliseconds(300);
-    const auto HOLD_MIN_THRESHOLD = std::chrono::milliseconds(500);
-    const auto HOLD_MAX_THRESHOLD = std::chrono::milliseconds(1200);
-
-    // Set up terminal for non-blocking input
-    struct termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO);
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    int oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
-    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
-
-    while (true) {
-        char ch;
-        if (read(STDIN_FILENO, &ch, 1) > 0) {
-            if (ch == ' ') {
-                auto currentTime = std::chrono::steady_clock::now();
-                auto timeSinceLastTap = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    currentTime - lastTapTime).count();
-
-                if (!isPlaying) {
-                    // First tap - start playing
-                    std::cout << "Starting playback...\n";
-                    player.play();
-                    isPlaying = true;
-                } else if (timeSinceLastTap < DOUBLE_TAP_THRESHOLD.count() && !isHolding) {
-                    // Double tap - stop playing
-                    std::cout << "Stopping playback...\n";
-                    player.pedalDoubleTap();
-                    isPlaying = false;
-                } else if (!isHolding && !holdTransitionTriggered) {
-                    // Single tap during playback - drum fill
-                    std::cout << "Playing drum fill...\n";
-                    player.pedalPress();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                    player.pedalRelease();
-                }
-                lastTapTime = currentTime;
-                isHolding = true;
-                holdStartTime = currentTime;
-            } else if (ch == 'q') {
-                std::cout << "Exiting...\n";
-                break;
-            } else if (!isPlaying) {
-                // Handle number keys when not playing
-                if (ch >= '1' && ch <= '5') {
-                    int drumsetSelection = ch - '0';
-                    QString drumsetPath;
-                    switch (drumsetSelection) {
-                        case 1:
-                            drumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Brushes Drumset v2.0.DRM";
-                            break;
-                        case 2:
-                            drumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Dance Drumset v2.0.DRM";
-                            break;
-                        case 3:
-                            drumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Rock Drumset v2.0.DRM";
-                            break;
-                        case 4:
-                            drumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Standard Drumset 2.0.DRM";
-                            break;
-                        case 5:
-                            drumsetPath = "/home/rory/Documents/BBWorkspace/user_lib/drum_sets/Metal Drumset v2.0.DRM";
-                            break;
-                    }
-                    std::cout << "Loading drum set " << drumsetSelection << "...\n";
-                    player.setDrumset(drumsetPath);
-                } else if (ch >= '6' && ch <= '9') {
-                    int songSelection = ch - '0';
-                    QString songPath;
-                    switch (songSelection) {
-                        case 6:
-                            songPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/203A18C4/716D6763.BBS";
-                            break;
-                        case 7:
-                            songPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/0AC5D6C6.BBS";
-                            break;
-                        case 8:
-                            songPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/07E0BFAA.BBS";
-                            break;
-                        case 9:
-                            songPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/07E0BFAA.BBS";
-                            break;
-                    }
-                    std::cout << "Loading song " << songSelection << "...\n";
-                    player.setSong(songPath);
-                } else if (ch == '0') {
-                    QString songPath = "/home/rory/Documents/BBWorkspace/user_lib/projects/BeatBuddy Default Content 2.0 - Project/SONGS/165DA150/07E0BFAA.BBS";
-                    std::cout << "Loading song 0...\n";
-                    player.setSong(songPath);
-                }
-            }
-        } else {
-            // Check for key release
-            if (isHolding && !wasHolding) {
-                auto currentTime = std::chrono::steady_clock::now();
-                auto holdDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    currentTime - holdStartTime).count();
-                
-                if (holdDuration >= HOLD_MIN_THRESHOLD.count() && holdDuration <= HOLD_MAX_THRESHOLD.count() && !holdTransitionTriggered) {
-                    // Transition to next part
-                    std::cout << "Transitioning to next part...\n";
-                    player.pedalLongPress();
-                    holdTransitionTriggered = true;
-                }
-                isHolding = false;
-                holdTransitionTriggered = false;
-            }
-            wasHolding = isHolding;
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    try {
+        QCoreApplication a(argc, argv);
+        
+        // Set signal handlers for graceful shutdown
+        signal(SIGINT, signalHandler);
+        signal(SIGTERM, signalHandler);
+        
+        // Create the player instance
+        Player player;
+        gPlayerPtr = &player;
+        
+        // Set initial files
+        player.setDrumset(DEFAULT_DRUMSET_PATH);  // Start with a smaller drumset by default
+        player.setSong(DEFAULT_SONG_PATH);
+        
+        // Display instructions
+        std::cout << "Press spacebar to control playback. Press 'q' to quit." << std::endl;
+        std::cout << "When not playing:" << std::endl;
+        std::cout << "  1-5: Select drum set" << std::endl;
+        std::cout << "  6-0: Select song" << std::endl;
+        
+        // Start keyboard input processing in another thread
+        processKeyboardInput(&player);
+        
+        // Start the application event loop
+        return a.exec();
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown fatal error" << std::endl;
+        return 1;
     }
-
-    // Restore terminal settings
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    fcntl(STDIN_FILENO, F_SETFL, oldf);
-
-    return 0;
 }

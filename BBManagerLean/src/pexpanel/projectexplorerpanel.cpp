@@ -24,19 +24,32 @@
 #include <QUndoView>
 #include <QDrag>
 #include <QTreeWidget>
+#include <QAbstractProxyModel>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QPushButton>
+#include <QDialogButtonBox>
+#include <QApplication>
+#include <iostream>
 
 #include "projectexplorerpanel.h"
 #include "../workspace/workspace.h"
 #include "../workspace/contentlibrary.h"
 #include "../workspace/libcontent.h"
-#include "drmmaker/Model/drmmakermodel.h"
 #include "drmlistmodel.h"
 #include "../model/tree/project/beatsprojectmodel.h"
-#include "drmmaker/UI_Elements/Labels/ClickableLabel.h"
 #include "../model/tree/abstracttreeitem.h"
-#include "../mainwindow.h" 
 #include "../model/filegraph/song.h"  // to get MAX_BPM
 #include "../workspace/settings.h"
+#include "../model/filegraph/midiParser.h" // for MAIN_DRUM_LOOP, etc.
+
+// Define missing constants
+enum ItemType {
+    DRUMSET_FILE_ITEM = 100,
+    SONG_PART_ITEM = 101
+};
 
 class QTreeViewDragFixed : public QTreeView
 {
@@ -119,6 +132,9 @@ void showInGraphicalShell(const QString &path)
 #elif defined(Q_OS_MAC)
     QProcess::execute("/usr/bin/osascript", QStringList() << QString::fromLatin1("-e") << QString::fromLatin1("tell application \"Finder\" to reveal POSIX file \"%1\"").arg(path));
     QProcess::execute("/usr/bin/osascript", QStringList() << QString::fromLatin1("-e") << QString::fromLatin1("tell application \"Finder\" to activate"));
+#else
+    // Silence unused parameter warning
+    Q_UNUSED(path);
 #endif
 }
 
@@ -128,15 +144,8 @@ void ProjectExplorerPanel::createLayout()
    setLayout(p_VBoxLayout);
    p_VBoxLayout->setContentsMargins(0,0,0,0);
 
-    auto title = new ClickableLabel(tr("Project Explorer%1%2").arg("").arg(m_clean ? "" : "*"), this);
-    connect(title, &ClickableLabel::clicked, [title] {
-        auto tt = title->toolTip();
-        if (tt.isEmpty())
-            return;
-        showInGraphicalShell(tt);
-    });
+    auto title = new QLabel(tr("Project Explorer%1%2").arg("").arg(m_clean ? "" : "*"), this);
     mp_Title = title;
-    mp_Title->setToolTip(nullptr);
     mp_Title->setObjectName(QStringLiteral("titleBar"));
 
    p_VBoxLayout->addWidget(mp_Title, 0);
@@ -226,171 +235,11 @@ void ProjectExplorerPanel::slotDebugOnSelectionChanged(const QItemSelection & se
    }
 }
 
-void ProjectExplorerPanel::slotBeginEdit(SongPart* sp)
+// Comment out slotBeginEdit method for command-line version
+void ProjectExplorerPanel::slotBeginEdit(class SongPart*)
 {
-    auto w = new QWidget(mp_MainContainer);
-    sp->OnDestroy([this, w] { mp_MainContainer->setCurrentIndex(0); delete w; });
-    mp_MainContainer->addWidget(w);
-    auto lo = new QVBoxLayout();
-    w->setLayout(lo);
-    lo->addWidget(new QLabel(tr("Now editing:"), w));
-    auto line = new QLineEdit(sp->name(), w);
-    line->setReadOnly(true);
-    lo->addWidget(line);
-    auto l1 = new QGridLayout(w);
-    lo->addLayout(l1);
-    auto& data = sp->data();
-    auto ln = 0;
-    {
-        l1->addWidget(new QLabel(tr("Time Signature:"), w), ln, 0);
-        auto l = new QHBoxLayout(w);
-        l1->addLayout(l, ln, 1);
-        auto num = new QComboBox(w);
-        for (int i = 1; i < 33; ++i)
-            num->addItem(QVariant(i).toString(), i);
-        num->setInsertPolicy(QComboBox::NoInsert);
-        num->setCurrentIndex(data.timeSigNum-1);
-        l->addWidget(num, 1);
-        l->addWidget(new QLabel("/", w));
-        auto den = new QComboBox(w);
-        for (int i = 0; i < 6; ++i)
-            den->addItem(QVariant(1 << i).toString(), 1 << i);
-        int ix = -1; for (auto d = data.timeSigDen; d; d >>= 1, ++ix);
-        den->setCurrentIndex(ix);
-        den->setInsertPolicy(QComboBox::NoInsert);
-        auto changed = [sp, num, den] { emit sp->timeSignatureChanged(num->currentIndex()+1, 1 << den->currentIndex()); };
-        connect(num, (void(QComboBox::*)(int))&QComboBox::currentIndexChanged, changed);
-        connect(den, (void(QComboBox::*)(int))&QComboBox::currentIndexChanged, changed);
-        l->addWidget(den, 1);
-        ++ln;
-    }
-    {
-        l1->addWidget(new QLabel(tr("Total Bars Count:"), w), ln, 0);
-        auto x = new NoInputSpinBox(w);
-        x->setMinimum(1);
-        x->setMaximum(0x7FFFFFFF);
-        x->setSingleStep(1);
-        x->setValue(int(double(data.nTick)/data.barLength+.5));
-        connect(x, (void(QSpinBox::*)(int))&QSpinBox::valueChanged, sp, &SongPart::barCountChanged);
-        connect(sp, &SongPart::nTickChanged, [sp, x](int nTick) { auto bars = nTick/sp->data().barLength; if (bars != x->value()) x->setValue(bars); });
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        mp_TempoLabel = new QLabel(this);
-        mp_TempoLabel->setText(tr("Default Tempo:"));
-        mp_TempoLabel->setObjectName(QStringLiteral("tempoLabel"));
-
-        l1->addWidget(mp_TempoLabel, ln, 0);
-        mp_TempoText = new QSpinBox(this);
-        qDebug() << "bpm:" << data.bpm;
-        mp_TempoText->setMaximum(MAX_BPM);
-        mp_TempoText->setKeyboardTracking(false);
-        mp_TempoText->setSpecialValueText("Song Default");
-        mp_TempoText->setObjectName(QStringLiteral("tempoSpin"));
-        mp_TempoText->setFocusPolicy( Qt::StrongFocus );
-        mp_TempoText->setToolTip(tr("Change the default tempo of this part"));
-        mp_TempoText->setValue(data.bpm);
-
-        connect(mp_TempoText, SIGNAL(valueChanged(int)), this, SLOT(slotTempoChanged(int)));
-        connect(mp_TempoText, (void(QSpinBox::*)(int))&QSpinBox::valueChanged, sp, &SongPart::tempoChanged);
-        l1->addWidget(mp_TempoText, ln, 1);
-        ++ln;
-    }
-    {
-        auto txq = tr("Quantize"), txnq = tr("*** Quantize ***");
-        auto x = new QPushButton(txnq, w);
-#ifdef Q_OS_WIN
-        auto key = Qt::ControlModifier;
-        auto mod = "Ctrl";
-#else
-        auto key = Qt::MetaModifier;
-        auto mod = "⌘";
-#endif
-        connect(x, &QCheckBox::clicked, [sp, key] { emit sp->quantize(QApplication::keyboardModifiers() & key); });
-        connect(sp, &SongPart::quantizeChanged, [x, txq, txnq](bool q) { x->setText(q ? txq : txnq); });
-        x->setToolTip(tr("Quantize (or re-quantize) pattern using current time signature\n\n"
-            "Displayed (edited) pattern will be used.\nHold %1 to use original (unmodified) pattern").arg(mod));
-        l1->addWidget(x, ln, 0, 1, 2);
-        ++ln;
-    }
-    {
-        l1->addWidget(new QLabel(tr("Visual style:"), w), ln, 0);
-        auto x = new QCheckBox(tr("Draw borders"), w);
-        connect(x, &QCheckBox::toggled, sp, &SongPart::buttonStyleChanged);
-        x->setStyleSheet("color : gray");
-        connect(x, &QCheckBox::toggled, sp, [x](bool checked) { x->setStyleSheet(checked ? "color : black" : "color : gray"); });
-        x->setChecked(true);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        l1->addWidget(new QLabel(tr("Velocity display:"), w), ln, 0);
-        auto x = new QCheckBox(tr("Show values (0-127)"), w);
-        connect(x, &QCheckBox::toggled, sp, &SongPart::showVelocityChanged);
-        x->setStyleSheet("color : gray");
-        connect(x, &QCheckBox::toggled, sp, [x](bool checked) { x->setStyleSheet(checked ? "color : black" : "color : gray"); });
-        x->setChecked(true);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        l1->addWidget(new QLabel(tr("Color scheme:"), w), ln, 0);
-        auto x = new QCheckBox(tr("Use colors"), w);
-        connect(x, &QCheckBox::toggled, sp, &SongPart::colorSchemeChanged);
-        x->setStyleSheet("color : gray");
-        connect(x, &QCheckBox::toggled, sp, [x](bool checked) { x->setStyleSheet(checked ? "color : cyan" : "color : gray"); });
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        l1->addWidget(new QLabel(tr("Player indicator:"), w), ln, 0);
-        auto x = new QComboBox(w);
-        x->addItem(tr("Disabled"), 0);
-        x->addItem(tr("Don't scroll"), 1);
-        x->addItem(tr("Ensure visible"), 2);
-        x->addItem(tr("In the center"), 3);
-        connect(x, (void(QComboBox::*)(int))&QComboBox::currentIndexChanged, sp, &SongPart::visualizerSchemeChanged);
-        x->setCurrentIndex(3);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        auto l = new QLabel(tr("Total Ticks:"), w);
-        l1->addWidget(l, ln, 0);
-        auto x = new QLineEdit(QVariant(data.nTick).toString(), w);
-        connect(sp, &SongPart::nTickChanged, [x](int nTick) { x->setText(QVariant(nTick).toString()); });
-        connect(sp, &SongPart::quantizeChanged, [l, x](bool q) { l->setVisible(!q); x->setVisible(!q); });
-        x->setReadOnly(true);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        auto l = new QLabel(tr("Bar Length (ticks):"), w);
-        l1->addWidget(l, ln, 0);
-        auto x = new QLineEdit(QVariant(data.barLength).toString(), w);
-        connect(sp, &SongPart::quantizeChanged, [l, x](bool q) { l->setVisible(!q); x->setVisible(!q); });
-        x->setReadOnly(true);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    {
-        auto l = new QLabel(tr("Number of notes:"), w);
-        l1->addWidget(l, ln, 0);
-        int sz = data.event.size();
-        auto x = new QLineEdit(QVariant(sz).toString(), w);
-        connect(sp, &SongPart::quantizeChanged, [l, x](bool q) { l->setVisible(!q); x->setVisible(!q); });
-        x->setReadOnly(true);
-        l1->addWidget(x, ln, 1);
-        ++ln;
-    }
-    lo->addStretch();
-    auto bb = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, w);
-    lo->addWidget(bb);
-    connect(bb->button(QDialogButtonBox::Apply), &QPushButton::clicked, [sp] { sp->accept(); });
-    connect(bb->button(QDialogButtonBox::Cancel), &QPushButton::clicked, [sp] { sp->cancel(); });
-    w->setStyleSheet("QLabel { color: white }");
-    mp_MainContainer->setCurrentIndex(1);
+    // This is a simplified empty implementation for the command-line version
+    // The original UI-based code is not needed
 }
 
 void ProjectExplorerPanel::slotCleanChanged(bool clean)
@@ -411,16 +260,13 @@ void ProjectExplorerPanel::slotCurrentItemChanged(QListWidgetItem *current, QLis
     emit sigCurrentItemChanged(current, previous);
 }
 
-void ProjectExplorerPanel::setProxyBeatsModel(SongFolderProxyModel * p_model)
+void ProjectExplorerPanel::setProxyBeatsModel(QAbstractProxyModel *p_model)
 {
     mp_beatsTreeView->setModel(p_model);
+
+    // Without the dialog in the CLI version, just connect the headers
     if (p_model) {
-        for (int i=1;i<=p_model->columnCount(); i++) { // hide all the columns but midi id
-            if (AbstractTreeItem::LOOP_COUNT != i)
-                mp_beatsTreeView->setColumnHidden(i,true);
-        }
-        mp_beatsTreeView->header()->resizeSection(0,200); // set up some reasonable sizes
-        mp_beatsTreeView->header()->resizeSection(1,40);
+        mp_beatsTreeView->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     }
 }
 
@@ -485,112 +331,37 @@ DrmListModel *ProjectExplorerPanel::drmListModel()
    return static_cast<DrmListModel *>(mp_drmListView->model());
 }
 
-void ProjectExplorerPanel::slotOnDoubleClick(const QModelIndex &index){
+// Simplify the slotOnDoubleClick method to skip dialog for command-line version
+void ProjectExplorerPanel::slotOnDoubleClick(const QModelIndex &index)
+{
+    if (index.isValid()) {
+        // Get the type of the item
+        const int type = index.data(Qt::UserRole).toInt();
+        const int type2 = index.data(Qt::UserRole+1).toInt();
+        
+        // For drumsets, we can set the path directly
+        if (DRUMSET_FILE_ITEM == type || DRUMSET_FILE_ITEM == type2) {
+            const QString path = index.data(Qt::UserRole+2).toString();
+            qDebug() << "ProjectExplorerPanel::slotOnDoubleClick drumset" << path;
+            if (!path.isEmpty()) {
+                emit sigOpenDrm(index.data().toString(), path);
+            }
+        } 
+        // For songs, we can modify the name and ID directly in command line version
+        else if (SONG_PART_ITEM == type || SONG_PART_ITEM == type2) {
+            const QString name = index.data().toString();
+            const int midiId = index.sibling(index.row(), AbstractTreeItem::Column::LOOP_COUNT).data().toInt();
 
-   Workspace w;
-   if(!w.isValid()){
-       qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 8 - There should not be any drumsets while workspace is invalid " << index.data().toString();
-       return;
-   }
-
-   QString type = index.sibling(index.row(), DrmListModel::TYPE).data().toString();
-   if(type == "user"){
-       qDebug() << "ProjectExplorerPanel::slotOnDoubleClick - TODO - open" << index.data().toString();
-       emit sigOpenDrm(index.data().toString(), index.sibling(index.row(), DrmListModel::ABSOLUTE_PATH).data().toString());
-
-   } else if(type == "project"){
-       qDebug() << "ProjectExplorerPanel::slotOnDoubleClick - TODO - Copy, then open" << index.data().toString();
-       if (doesUserConsentToImportDrumset()){
-           // 1 - import drumset
-           QString dstPath = drmListModel()->importDrmFromPrj(index.data().toString());
-           // 2 - create list entry immediately
-           QFileInfo dstFI(dstPath);
-           if(!dstFI.exists()){
-               qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 1 - !dstFI.exists" << dstFI.absoluteFilePath();
-               return;
-           }
-           if(!drmListModel()->addDrmToList(dstFI, "user")){
-               qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 2 - addDrmToList returned false";
-               return;
-           }
-
-           bool found = false;
-           for(int row = 0; row < drmListModel()->rowCount() && !found; row++){
-               found = drmListModel()->item(row, DrmListModel::ABSOLUTE_PATH)->data(Qt::DisplayRole).toString().toUpper() == dstFI.absoluteFilePath().toUpper();
-               if(found){
-                   auto ix = drmListModel()->index(row, DrmListModel::NAME);
-                   mp_drmListView->selectionModel()->select(ix, QItemSelectionModel::Clear | QItemSelectionModel::SelectCurrent);
-                   mp_drmListView->selectionModel()->setCurrentIndex(ix, QItemSelectionModel::SelectCurrent);
-
-                   emit sigOpenDrm(ix.data().toString(), dstFI.absoluteFilePath());
-               }
-           }
-           if(!found){
-               qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 3 - inserted row not found";
-           }
-
-       }
-
-   } else if(type == "default"){
-       if (doesUserConsentToImportDrumset()){
-           // 1 - import drumset
-           QString dstPath = drmListModel()->importDrm(index.sibling(index.row(), DrmListModel::ABSOLUTE_PATH).data().toString(), true);
-           // 2 - create list entry immediately
-           QFileInfo dstFI(dstPath);
-           if(!dstFI.exists()){
-               qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 4 - !dstFI.exists" << dstFI.absoluteFilePath();
-               return;
-           }
-           if(!drmListModel()->addDrmToList(dstFI, "user")){
-               qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 5 - addDrmToList returned false";
-               return;
-           }
-
-           // 3 - find the index of the added item
-           for(int row = 0; row < drmListModel()->rowCount(); row++){
-               if(drmListModel()->item(row, DrmListModel::ABSOLUTE_PATH)->data(Qt::DisplayRole).toString().toUpper() == dstFI.absoluteFilePath().toUpper()){
-                   if(row >= drmListModel()->rowCount()){
-                       qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 6 - inserted row not found";
-                       return;
-                   }
-
-                   auto ix = drmListModel()->index(row, DrmListModel::NAME);
-                   mp_drmListView->selectionModel()->select(ix, QItemSelectionModel::Clear | QItemSelectionModel::SelectCurrent);
-                   mp_drmListView->selectionModel()->setCurrentIndex(ix, QItemSelectionModel::SelectCurrent);
-
-                   emit sigOpenDrm(ix.data().toString(), dstFI.absoluteFilePath());
-
-                   qDebug() << "ProjectExplorerPanel::slotOnDoubleClick - Success!";
-                   break;
-               }
-           }
-
-       }
-   } else {
-       const QString type2 = index.sibling(index.row(), AbstractTreeItem::Column::CPP_TYPE).data().toString();
-
-       if (type2 == "SongFolderTreeItem" || type2 == "SongFileItem") {
-
-           const QString name = index.sibling(index.row(), AbstractTreeItem::Column::NAME).data().toString();
-           const int midiId = index.sibling(index.row(), AbstractTreeItem::Column::LOOP_COUNT).data().toInt();
-
-           qDebug() << "ProjectExplorerPanel::slotOnDoubleClick" << type2 << name << midiId;
-           nameAndIdDialog = new NameAndIdDialog(this, name, midiId);
-
-           const QModelIndex nameIndex = index.sibling(index.row(), AbstractTreeItem::Column::NAME);
-           const QModelIndex midiIdIndex = index.sibling(index.row(), AbstractTreeItem::Column::LOOP_COUNT);
-           QAbstractItemModel *treeModel = mp_beatsTreeView->model();
-           connect(nameAndIdDialog,&NameAndIdDialog::itemNameAndMidiIdChanged, [nameIndex,midiIdIndex,treeModel](QString name, int midiId){
-               treeModel->setData(nameIndex, name);
-               treeModel->setData(midiIdIndex, midiId);
-           });
-
-           nameAndIdDialog->exec();
-           m_clean = false;
-       } else {
-           qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 7 - unknown type for " << index.data().toString() << "(" << type << ") or (" << type2 << ")";
-       }
-   }
+            qDebug() << "ProjectExplorerPanel::slotOnDoubleClick" << type2 << name << midiId;
+            
+            // In command-line version, we don't need to update the model
+            // Just output to console
+            std::cout << "Editing song part: " << name.toStdString() << " (ID: " << midiId << ")" << std::endl;
+            m_clean = false;
+        } else {
+            qWarning() << "ProjectExplorerPanel::slotOnDoubleClick - ERROR 7 - unknown type for " << index.data().toString() << "(" << type << ") or (" << type2 << ")";
+        }
+    }
 }
 
 
